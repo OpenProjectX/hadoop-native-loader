@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest ]
+    runs-on: ${{ matrix.os }}
+
+    # Use bash everywhere so ./gradlew works the same on Windows (Git Bash) and Linux.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build & test all Gradle modules
+        run: ./gradlew build --stacktrace
+
+      - name: Test the Gradle example (composite build, application run + test)
+        run: |
+          ./gradlew -p example run --stacktrace
+          ./gradlew -p example test --stacktrace
+
+      - name: Install core + maven-plugin to the local Maven repo
+        run: ./gradlew :core:publishToMavenLocal :maven-plugin:publishToMavenLocal --stacktrace
+
+      - name: Test the Maven example
+        run: mvn -B -f maven-example/pom.xml test
