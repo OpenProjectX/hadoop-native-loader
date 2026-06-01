@@ -39,6 +39,7 @@ object HadoopNativeExtractor {
      *
      * @return the list of files written into [targetDir].
      */
+    @JvmStatic
     fun extract(targetDir: File): List<File> {
         targetDir.mkdirs()
         val names = bundledArtifactNames()
@@ -53,6 +54,7 @@ object HadoopNativeExtractor {
     }
 
     /** Names of the artifacts bundled under [RESOURCE_DIR], sorted. */
+    @JvmStatic
     fun bundledArtifactNames(): List<String> {
         val url = classLoader().getResource(RESOURCE_DIR) ?: return emptyList()
         return when (url.protocol) {

@@ -42,6 +42,7 @@ and puts them on the native path automatically.
 |----------------|---------------------------------------------------------------------------|---------------------------------------------------------------------|
 | `core`         | `org.openprojectx.hadoop.native.loader.core:core`                         | `HadoopNativeExtractor` + the bundled native artifacts.             |
 | `gradle-plugin`| plugin id `org.openprojectx.hadoop-native-loader`                         | Extracts the libs and wires them onto the native path of forked JVMs.|
+| `maven-plugin` | `org.openprojectx.hadoop.native.loader.core:maven-plugin` (goalPrefix `hadoop-native-loader`) | Same, for Maven Surefire/Failsafe test JVMs.        |
 
 ## Usage (Gradle plugin)
 
@@ -90,6 +91,45 @@ hadoopNativeLoader {
 }
 ```
 
+## Usage (Maven plugin)
+
+For Maven builds, the `hadoop-native-loader-maven-plugin` does the equivalent
+for Surefire/Failsafe. Its `extract` goal unpacks the libraries and — the same
+way the JaCoCo agent works — prepends `-Djava.library.path=<bin>` and
+`-Dhadoop.home.dir=<dir>` to the `argLine` property, which the forked test JVM
+reads at launch.
+
+```xml
+<build>
+  <plugins>
+    <plugin>
+      <groupId>org.openprojectx.hadoop.native.loader.core</groupId>
+      <artifactId>maven-plugin</artifactId>
+      <version>0.1.1-SNAPSHOT</version>
+      <executions>
+        <execution>
+          <goals><goal>extract</goal></goals> <!-- bound to the `initialize` phase -->
+        </execution>
+      </executions>
+    </plugin>
+  </plugins>
+</build>
+```
+
+Then `mvn test` gets the native Hadoop libraries with no further setup. Goal
+parameters: `hadoopNativeLoader.outputDirectory`, `hadoopNativeLoader.propertyName`
+(default `argLine`), `hadoopNativeLoader.setHadoopHomeDir`, `hadoopNativeLoader.skip`.
+
+> If you configure Surefire's `argLine` yourself, keep this value with late
+> evaluation: `<argLine>@{argLine} ...your args...</argLine>`.
+
+The `maven-plugin` module is a normal Gradle subproject — it is built (and
+released) by the Gradle build via the GradleX `maven-plugin-development` plugin,
+which generates the Maven plugin descriptor from the `@Mojo` annotations. Install
+it locally with `./gradlew :maven-plugin:publishToMavenLocal`. A runnable Maven
+example is in [`maven-example/`](maven-example): after the local install, run
+`mvn -f maven-example/pom.xml test`.
+
 ## Using `core` directly
 
 If you are not using the Gradle plugin, the `core` module just extracts the
@@ -109,8 +149,8 @@ HadoopNativeExtractor.extract(bin)
 ## Building & publishing
 
 ```bash
-./gradlew build                # compile + test all modules
-./gradlew publishToMavenLocal  # install core + the plugin into ~/.m2
+./gradlew build                # compile + test all modules (core, gradle-plugin, maven-plugin)
+./gradlew publishToMavenLocal  # install core + both plugins into ~/.m2
 ```
 
 The release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
