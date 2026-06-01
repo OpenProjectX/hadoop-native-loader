@@ -13,7 +13,7 @@
         <maven.compiler.release>17</maven.compiler.release>
         <hadoop.version>3.4.2</hadoop.version>
         <junit.version>5.11.4</junit.version>
-        <hadoop-native-loader.version>0.1.1-SNAPSHOT</hadoop-native-loader.version>
+        <hadoop-native-loader.version>0.1.2-SNAPSHOT</hadoop-native-loader.version>
     </properties>
 
     <dependencies>

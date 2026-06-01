@@ -50,4 +50,9 @@ jobs:
         run: ./gradlew :core:publishToMavenLocal :maven-plugin:publishToMavenLocal --stacktrace
 
       - name: Test the Maven example
-        run: mvn -B -f maven-example/pom.xml test
+        # Pass the project's current version so the example always resolves the
+        # artifacts that were just published (the version is bumped by releases).
+        run: |
+          VERSION=$(grep '^version' gradle.properties | sed 's/.*=//' | tr -d '[:space:]')
+          echo "Using hadoop-native-loader version: $VERSION"
+          mvn -B -f maven-example/pom.xml test -Dhadoop-native-loader.version="$VERSION"
