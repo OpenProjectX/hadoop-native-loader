@@ -20,8 +20,12 @@ subprojects {
     apply(plugin = "maven-publish")
     apply(plugin = "signing")
 
-    // Configure publishing only when the project has a Java component (Kotlin/JVM typically applies java too)
+    // Configure publishing only when the project has a Java component (Kotlin/JVM typically applies java too).
+    // Gradle plugin modules publish themselves via the `java-gradle-plugin` (`gradlePlugin {}`) block, so skip
+    // the generic publication there to avoid duplicate publications with the same coordinates.
     plugins.withId("java") {
+        if (plugins.hasPlugin("java-gradle-plugin")) return@withId
+
 
         // ✅ Ensure required artifacts exist for Maven Central
         extensions.configure<JavaPluginExtension>("java") {

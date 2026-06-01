@@ -50,6 +50,9 @@ val buildFiles = fileTree(rootDir) {
         "out"
     )
     exclude("**/grails3")
+    // The example is a standalone composite build that consumes the plugin via
+    // includeBuild(".."); keep it out of this build's project discovery.
+    exclude("example/**")
     if (!excludes.isNullOrEmpty()) {
         exclude(excludes)
     }

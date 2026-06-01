@@ -1,9 +1,9 @@
 # hadoop-native-loader
 
-Load the bundled Hadoop native artifacts (`hadoop.dll`, `winutils.exe`,
-`libhadoop.so`, …) and wire up the JVM **before the Hadoop client initializes**,
-so the native code is actually used instead of falling back to the pure-Java
-implementations.
+Make the bundled Hadoop native artifacts (`hadoop.dll`, `winutils.exe`,
+`libhadoop.so`, …) available to the Hadoop client **without any manual
+environment setup**, so the native code is actually used instead of falling back
+to the slower pure-Java implementations.
 
 Bundled artifacts target **Hadoop 3.4.2** and live in
 [`core/src/main/resources/lib`](core/src/main/resources/lib).
@@ -12,10 +12,9 @@ Bundled artifacts target **Hadoop 3.4.2** and live in
 
 Hadoop resolves `hadoop.home.dir`, `winutils`, and the `hadoop` native library
 inside the **static initializers** of `org.apache.hadoop.util.Shell` and
-`org.apache.hadoop.util.NativeCodeLoader`. Those run the first time *any* Hadoop
-class is touched, and the result is cached for the life of the JVM. If the
-environment is not prepared *before* that happens, you are stuck with the
-familiar errors for the rest of the process:
+`org.apache.hadoop.util.NativeCodeLoader`. If the environment is not prepared
+*before* those run, you are stuck with the familiar errors for the life of the
+JVM:
 
 ```
 java.io.FileNotFoundException: HADOOP_HOME and hadoop.home.dir are unset
@@ -23,126 +22,102 @@ WARN  NativeCodeLoader - Unable to load native-hadoop library for your platform.
                           using builtin-java classes where applicable
 ```
 
-This library extracts the right artifacts to disk and configures the JVM **as
-early as possible** so the Hadoop client finds everything.
+There is a hard JVM constraint in the way:
+
+> **On JDK 9+ the `System.loadLibrary` search path is frozen at JVM startup.**
+> `java.library.path` is captured once into an immutable `final` array
+> (`jdk.internal.loader.NativeLibraries$LibraryPaths`), so it **cannot** be
+> changed from inside a running JVM (the old `ClassLoader.usr_paths` reset trick
+> no longer works — those fields were removed). The only reliable way to add a
+> directory is to set the OS dynamic-loader variable **at launch**:
+> `LD_LIBRARY_PATH` (Linux), `PATH` (Windows), `DYLD_LIBRARY_PATH` (macOS).
+
+Because that has to happen at JVM launch, the clean fix is a **Gradle plugin**:
+it controls how the test / application JVMs are forked, extracts the libraries,
+and puts them on the native path automatically.
 
 ## Modules
 
-| Module   | Artifact                                                  | Purpose                                                                 |
-|----------|-----------------------------------------------------------|-------------------------------------------------------------------------|
-| `core`   | `org.openprojectx.hadoop.native.loader.core:core`         | `HadoopNativeLoader` — extracts the libs and configures the JVM.        |
-| `junit5` | `org.openprojectx.hadoop.native.loader.core:junit5`       | Hooks the loader into the JUnit 5 lifecycle so it runs before any test. |
+| Module         | Artifact                                                                  | Purpose                                                              |
+|----------------|---------------------------------------------------------------------------|---------------------------------------------------------------------|
+| `core`         | `org.openprojectx.hadoop.native.loader.core:core`                         | `HadoopNativeExtractor` + the bundled native artifacts.             |
+| `gradle-plugin`| plugin id `org.openprojectx.hadoop-native-loader`                         | Extracts the libs and wires them onto the native path of forked JVMs.|
 
-## Usage
-
-### Programmatic (`core`)
-
-Call `HadoopNativeLoader.load()` once, as early as possible — ideally before any
-Hadoop class is referenced (a `main()` entry, a static initializer, or a
-servlet/Spring bootstrap):
+## Usage (Gradle plugin)
 
 ```kotlin
-import org.openprojectx.hadoop.nativeloader.HadoopNativeLoader
-
-fun main() {
-    HadoopNativeLoader.load()   // idempotent, thread-safe
-    // ... now use the Hadoop client
+plugins {
+    application                                 // or your test setup
+    id("org.openprojectx.hadoop-native-loader") version "0.1.0-SNAPSHOT"
 }
 ```
 
-`load()`:
+That's it. Applying the plugin:
 
-1. Extracts every artifact under `resources/lib` into a stable `<home>/bin`.
-2. Sets `hadoop.home.dir` to `<home>` (lets `Shell` locate `winutils.exe`).
-3. Prepends `<home>/bin` to the `java.library.path` system property.
-4. Eagerly `System.load`s the platform native library by absolute path.
+1. Registers `extractHadoopNativeLibs`, which unpacks the bundled artifacts into
+   `build/hadoop-native/bin`.
+2. For every `Test` and `JavaExec` task (e.g. the `application` plugin's `run`):
+   - makes it depend on the extraction task;
+   - prepends `build/hadoop-native/bin` to the OS dynamic-loader variable
+     (`LD_LIBRARY_PATH` / `PATH` / `DYLD_LIBRARY_PATH`), which is folded into
+     `java.library.path` when the JVM starts — so
+     `System.loadLibrary("hadoop")` finds the library;
+   - sets the `hadoop.home.dir` system property (so `Shell` finds `winutils`).
 
-### Tests (`junit5`)
+Then `./gradlew test` and `./gradlew run` get the native Hadoop libraries with
+no further configuration.
 
-Add the `junit5` artifact to your test classpath. A
-`LauncherSessionListener` registered via `META-INF/services` runs **when the
-JUnit launcher session opens — before any test class is discovered or loaded**,
-which is the earliest hook JUnit offers. No annotation required:
+### Example
 
-```kotlin
-class MyHdfsTest {
-    @Test
-    fun usesNativeHadoop() {
-        // HadoopNativeLoader.load() already ran before this class loaded.
-    }
-}
-```
-
-If you prefer an explicit, per-class opt-in instead, use the bundled extension:
-
-```kotlin
-@ExtendWith(HadoopNativeLoaderExtension::class)
-class MyHdfsTest { /* ... */ }
-```
-
-## Important: making `NativeCodeLoader` load the native library
-
-> **On JDK 9+ you cannot change `System.loadLibrary`'s search path from inside a
-> running JVM.**
-
-`java.library.path` is captured *once at JVM startup* into an immutable, `final`
-array (`jdk.internal.loader.NativeLibraries$LibraryPaths`). Mutating the system
-property afterwards has no effect, and the old `ClassLoader.usr_paths` reset
-trick no longer works (those fields were removed). So setting `hadoop.home.dir`
-is enough for `winutils` (a plain property), but Hadoop's
-`NativeCodeLoader.System.loadLibrary("hadoop")` will still fail unless the
-extraction directory is on the **OS dynamic-loader path at launch**:
-
-| OS      | Environment variable  |
-|---------|-----------------------|
-| Linux   | `LD_LIBRARY_PATH`     |
-| Windows | `PATH`                |
-| macOS   | `DYLD_LIBRARY_PATH`   |
-
-The directory is *scanned at load time*, so it is fine that the loader only
-populates it after the JVM is already running — as long as that happens before
-the Hadoop client runs. The recipe:
-
-1. Point the loader at a **fixed** directory with `-Dhadoop.native.loader.dir=<dir>`.
-2. Put `<dir>/bin` on the relevant env var at launch.
-
-This project's Gradle build does exactly that for its own test tasks — see
-[`buildSrc/src/main/kotlin/kotlin-jvm.gradle.kts`](buildSrc/src/main/kotlin/kotlin-jvm.gradle.kts):
-
-```kotlin
-tasks.withType<Test>().configureEach {
-    val nativeHome = layout.buildDirectory.dir("hadoop-native").get().asFile
-    val nativeBin = nativeHome.resolve("bin")
-    systemProperty("hadoop.native.loader.dir", nativeHome.absolutePath)
-    doFirst { nativeBin.mkdirs() }
-
-    val env = when {                       // OS dynamic-loader path
-        os.contains("win") -> "PATH"
-        os.contains("mac") -> "DYLD_LIBRARY_PATH"
-        else               -> "LD_LIBRARY_PATH"
-    }
-    environment(env, nativeBin.absolutePath + File.pathSeparator + (System.getenv(env) ?: ""))
-}
-```
-
-For a normal application, set the env var the same way before launching the JVM
-(e.g. in your launch script, `Dockerfile`, or run configuration).
-
-## Configuration
-
-| System property              | Default                                        | Description                                              |
-|------------------------------|------------------------------------------------|----------------------------------------------------------|
-| `hadoop.native.loader.dir`   | `${java.io.tmpdir}/hadoop-native-loader/<ver>` | Directory the artifacts are extracted into.              |
-| `hadoop.home.dir`            | *(set by the loader)*                          | Hadoop home. The loader only sets it when it is unset.   |
-
-## Building
+A runnable example lives in [`example/`](example). It is a standalone composite
+build that consumes the plugin from source (`includeBuild("..")`) and uses the
+real Hadoop client. From the repository root:
 
 ```bash
-./gradlew build      # compile + test both modules
-./gradlew test       # run tests only
+./gradlew -p example run     # prints "native-hadoop loaded = true"
+./gradlew -p example test    # asserts NativeCodeLoader.isNativeCodeLoaded()
 ```
 
-Requires a JDK 17 toolchain (configured via the Gradle Kotlin convention plugin).
+### Configuration
+
+```kotlin
+hadoopNativeLoader {
+    // Where the artifacts are extracted (libraries land in <dir>/bin).
+    outputDirectory.set(layout.buildDirectory.dir("hadoop-native"))
+    configureTestTasks.set(true)      // wire Test tasks      (default true)
+    configureJavaExecTasks.set(true)  // wire JavaExec tasks  (default true)
+    setHadoopHomeDir.set(true)        // set hadoop.home.dir  (default true)
+}
+```
+
+## Using `core` directly
+
+If you are not using the Gradle plugin, the `core` module just extracts the
+artifacts; you are then responsible for putting the directory on the native path
+at launch (see the constraint above).
+
+```kotlin
+import org.openprojectx.hadoop.nativeloader.HadoopNativeExtractor
+import java.io.File
+
+val bin = File(System.getProperty("java.io.tmpdir"), "hadoop-native/bin")
+HadoopNativeExtractor.extract(bin)
+// then launch your JVM with e.g. LD_LIBRARY_PATH=<bin> (Linux),
+// or set -Dhadoop.home.dir=<bin.parent> for winutils.
+```
+
+## Building & publishing
+
+```bash
+./gradlew build                # compile + test all modules
+./gradlew publishToMavenLocal  # install core + the plugin into ~/.m2
+```
+
+The release workflow ([`.github/workflows/release.yml`](.github/workflows/release.yml))
+publishes to Maven Central via the `net.researchgate.release` +
+`io.github.gradle-nexus.publish-plugin` setup.
+
+Requires a JDK 17 toolchain.
 
 ## License
 
